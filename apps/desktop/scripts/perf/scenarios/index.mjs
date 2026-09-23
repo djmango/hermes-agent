@@ -7,6 +7,7 @@ import idleCost from './idle-cost.mjs'
 import keystroke from './keystroke.mjs'
 import liveWindow from './live-window.mjs'
 import multitab from './multitab.mjs'
+import openChats from './open-chats.mjs'
 import profileSwitch from './profile-switch.mjs'
 import renderChurn from './render-churn.mjs'
 import rightPane from './right-pane.mjs'
@@ -23,6 +24,7 @@ export const SCENARIOS = {
   [keystroke.name]: keystroke,
   [transcript.name]: transcript,
   [multitab.name]: multitab,
+  [openChats.name]: openChats,
   [liveWindow.name]: liveWindow,
   [renderChurn.name]: renderChurn,
   [rightPane.name]: rightPane,
