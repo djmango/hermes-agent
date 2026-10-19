@@ -555,6 +555,14 @@ hermes kanban set-model t_abcd none    # clear the override
 
 The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
 
+A pin is an identity, not a preference. If the pinned provider cannot serve the model (no
+credentials, a quota wall, an outage), the fallback chain does **not** swap in another model:
+the worker refuses to start and the card records `MODEL PIN REFUSED: pinned model <route>
+could not be served (<reason>)` plus every route it refused. A fallback that offers the *same*
+model on another provider is allowed, which is how a pin survives one account's rate limit
+(for example `anthropic/claude-opus-5.5` through `openrouter` while the Claude account is
+capped).
+
 ### Cost strategy: frontier orchestrator, inexpensive workers
 
 Kanban's per-profile configs make the planner/worker cost split natural. Decomposing a project into well-scoped cards takes frontier-level judgment; executing a card that already carries a clear goal, context, and handoff evidence usually doesn't — and the workers are where the vast majority of tokens are spent, so the worker model is where the cost lives. Run your orchestrator/dispatcher profile on a frontier model and point worker profiles at inexpensive models. Each profile has its own `config.yaml` under `~/.hermes/profiles/<name>/`, and the dispatcher injects the profile-scoped `HERMES_HOME` when it spawns `hermes -p <assignee>`, so each worker reads its own profile's model settings:

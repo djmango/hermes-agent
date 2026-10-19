@@ -840,7 +840,19 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     # reach the chain instead of dying at init with a misleading "No LLM provider configured" error. See
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
+    from agent.model_pin import (
+        ModelPinRefusedError, agent_pin, pin_refuses, refusal_message,
+    )
+    _pin = agent_pin(agent)
+    _pin_refused: list[tuple[str, str]] = []
     for _fb in _fallback_entries(fallback_model):
+        # A pin outranks the chain: only a route serving the SAME model is a fallback. Anything
+        # else would silently start the run on a different (usually weaker) model.
+        if _pin is not None and pin_refuses(agent, str(_fb["provider"]), str(_fb["model"])):
+            _pin_refused.append(
+                (str(_fb["provider"]), f"serves {_fb['model']}, not the pinned model")
+            )
+            continue
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
@@ -856,6 +868,19 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             agent.model = _fb_model or _fb["model"]
             agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    if _pin is not None:
+        # REFUSE rather than start on another model. This is the loud half of the pin: a worker
+        # never begins a pass on a model the card did not pin.
+        raise ModelPinRefusedError(
+            refusal_message(
+                agent,
+                f"no usable credentials on {_pin['provider'] or 'the pinned provider'}",
+                _pin_refused,
+            ),
+            pinned_model=_pin["model"],
+            pinned_provider=_pin["provider"],
+            refused=_pin_refused,
+        )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         # Use the provider's real env var name (alibaba → DASHSCOPE_API_KEY).
@@ -2175,7 +2200,8 @@ _CALLBACK_PARAMS = (
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
-    args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
+    args: list[str] | None = None, model: str = "",
+    max_iterations: int = sys.maxsize,
     enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
     tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
@@ -2207,6 +2233,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    model_pinned: bool = False,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
@@ -2260,6 +2287,15 @@ def init_agent(
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
+    # An explicitly named model is a PIN, not a preference: a provider fallback may change the
+    # route to it but never the model. Set before _build_client, whose init-time fallback path
+    # consults it (agent/model_pin.py).
+    from agent.model_pin import set_pin
+    agent._model_pin_refusals = []
+    if model_pinned:
+        set_pin(agent, agent.provider, agent.model)
+    else:
+        agent._model_pin = None
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:

@@ -750,6 +750,31 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
+_PIN_REFUSAL_MARKER = "MODEL PIN REFUSED"
+
+
+def _worker_log_pin_refusal(task_id: str) -> str:
+    """The pin-refusal sentence from a dead worker's own log, or "".
+
+    A worker that refused to start on a different model exits nonzero with the reason only in its
+    log. Without this the card says "exited with code 1" and the reason is buried in the log, which
+    is the silence this whole path exists to end."""
+    try:
+        log_path = _kb.worker_logs_dir(_kb.get_current_board()) / f"{task_id}.log"
+        with open(log_path, "rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 16 * 1024))
+            tail = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    at = tail.rfind(_PIN_REFUSAL_MARKER)
+    if at < 0:
+        return ""
+    line = tail[at:].splitlines()[0] if tail[at:].splitlines() else ""
+    return line.strip()[:500]
+
+
 def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
     kind, code = _classify_worker_exit(pid)
@@ -826,6 +851,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"])
+            # A pin refusal ends the worker without doing the work; the reason lives only in
+            # the worker log, and the card must carry it instead of a bare exit code.
+            pin_refusal = _worker_log_pin_refusal(row["id"])
+            if pin_refusal:
+                dead.error_text = pin_refusal
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
