@@ -467,6 +467,13 @@ def _run_agent(
     ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
+    # An explicitly named model is a PIN here too (same contract as cli.py): the fallback chain may
+    # reroute it, never swap it for another model. Without this the oneshot path started a pinned
+    # model and let a rate limit silently continue the turn on the chain's model (the t_70c2167f
+    # incident, reproduced on -z). See agent/model_pin.py.
+    model_pinned = bool(
+        (model or "").strip() or os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    )
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
@@ -479,6 +486,7 @@ def _run_agent(
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             model=choice.model,
+            model_pinned=model_pinned,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",

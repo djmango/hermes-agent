@@ -532,7 +532,11 @@ class CLIAgentSetupMixin:
                 if getattr(self, "_single_query_mode", False)
                 else self._clarify_callback)
             self.agent = AIAgent(
-                model=effective_model, api_key=runtime.get("api_key"),
+                model=effective_model,
+                # -m/--model names a model the operator pinned: a fallback may reroute it but
+                # never swap it for another. See agent/model_pin.py.
+                model_pinned=bool(getattr(self, "_explicit_model_override", False)),
+                api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),

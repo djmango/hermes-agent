@@ -2205,6 +2205,13 @@ def switch_model(
         old_model, old_provider, new_model, new_provider,
     )
     _persist_switch_billing_route(agent)
+    # A deliberate switch is the operator's newest word on the model, so it re-pins: the old pin
+    # must not refuse fallbacks for a model the session no longer runs. An unpinned session stays
+    # unpinned and keeps the plain fallback chain.
+    from agent.model_pin import set_pin
+    if getattr(agent, "_model_pin", None) is not None:
+        set_pin(agent, new_provider, new_model)
+        agent._model_pin_refusals = []
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):

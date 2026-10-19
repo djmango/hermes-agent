@@ -1713,9 +1713,15 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
 
 
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
-    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
-    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
-    context across every provider again."""
+    """Chain exhausted. A pinned run REFUSES here instead of continuing (raises
+    ``ModelPinRefusedError`` naming the pinned model); an unpinned run returns False. A non-empty
+    chain walked on a non-rate-limit failure arms a short cooldown so next turn's
+    restore_primary_runtime stays gated instead of replaying the whole context across every
+    provider again."""
+    from agent.model_pin import pin_refusal_error
+    _pin_error = pin_refusal_error(agent, _fallback_reason_text(reason))
+    if _pin_error is not None:
+        raise _pin_error
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
         agent._rate_limited_until = max(
@@ -1843,6 +1849,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+            continue
+        # A pin outranks the chain. A different model is never an acceptable fallback: the run
+        # stops with the pin named (see _fallback_chain_exhausted) instead of continuing weaker.
+        from agent.model_pin import pin_refuses, record_pin_refusal
+        if pin_refuses(agent, fb_provider, fb_model):
+            record_pin_refusal(
+                agent, fb_provider, f"serves {fb_model}, not the pinned model"
+            )
             continue
 
         try:
