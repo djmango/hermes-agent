@@ -144,6 +144,45 @@ def test_fallback_reason_is_named_in_the_refusal():
     assert "rate limit" in str(error)
 
 
+# A pin the configured chain cannot serve reaches the aggregator's route to the SAME model.
+
+_CHAIN = [
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash"},
+    {"provider": "anthropic", "model": "claude-sonnet-5"},
+]
+
+
+def test_a_pinned_model_gets_an_aggregator_route_of_the_same_identity():
+    with (
+        patch("hermes_cli.models.model_ids", return_value=["anthropic/claude-opus-5.5", "gpt-5"]),
+        patch("hermes_cli.models_detect.provider_has_credentials", return_value=True),
+    ):
+        from agent.model_pin import pin_route_entry
+
+        entry = pin_route_entry({"provider": "anthropic", "model": "claude-opus-5-5"}, _CHAIN)
+
+    assert entry is not None
+    assert entry["provider"] == "openrouter"
+    assert model_identity(entry["model"]) == model_identity("claude-opus-5-5")
+
+
+def test_no_crossover_when_the_chain_already_serves_the_pin():
+    from agent.model_pin import pin_route_entry
+
+    chain = [{"provider": "openrouter", "model": "anthropic/claude-opus-5.5"}]
+    assert pin_route_entry({"provider": "anthropic", "model": "claude-opus-5-5"}, chain) is None
+
+
+def test_no_crossover_invents_a_route_when_none_serves_the_pin():
+    with (
+        patch("hermes_cli.models.model_ids", return_value=["openai/gpt-5"]),
+        patch("hermes_cli.models_detect.provider_has_credentials", return_value=True),
+    ):
+        from agent.model_pin import pin_route_entry
+
+        assert pin_route_entry({"provider": "anthropic", "model": "claude-opus-5-5"}, _CHAIN) is None
+
+
 # The brief: a worker must compare its own model against the card's pin.
 
 

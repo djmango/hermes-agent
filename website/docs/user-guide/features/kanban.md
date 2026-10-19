@@ -561,7 +561,9 @@ the worker refuses to start and the card records `MODEL PIN REFUSED: pinned mode
 could not be served (<reason>)` plus every route it refused. A fallback that offers the *same*
 model on another provider is allowed, which is how a pin survives one account's rate limit
 (for example `anthropic/claude-opus-5.5` through `openrouter` while the Claude account is
-capped).
+capped). When the configured chain serves no route for the pinned model at all, the agent adds
+the aggregator's route to that same model, so the pin runs instead of refusing while a usable
+route exists. The same contract holds for `hermes -z`, which pins an explicitly named model too.
 
 ### Cost strategy: frontier orchestrator, inexpensive workers
 

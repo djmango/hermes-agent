@@ -100,6 +100,34 @@ def record_pin_refusal(agent: Any, provider: str, why: str) -> None:
     logger.debug("Pin refused fallback route %s: %s", provider, why)
 
 
+def pin_route_entry(pin: Optional[dict], entries: Iterable[dict]) -> Optional[dict]:
+    """A route that serves the SAME model as the pin on another provider, or None.
+
+    A pin is a model identity, not a provider: when the configured chain serves no route for it,
+    the aggregator that relists the same model is a route change, not a swap. Returned only when
+    the chain has no such route already and the aggregator's credentials resolve, so a Claude pin
+    can survive its vendor account's quota without the run ever changing model.
+    """
+    if not pin or not pin.get("model"):
+        return None
+    identity = model_identity(pin["model"])
+    for entry in entries or ():
+        if model_identity(entry.get("model")) == identity:
+            return None
+    try:
+        from hermes_cli.models import model_ids
+        from hermes_cli.models_detect import provider_has_credentials
+        slugs = model_ids()
+    except Exception:
+        return None
+    if not provider_has_credentials("openrouter") or pin["provider"] == "openrouter":
+        return None
+    for slug in slugs:
+        if model_identity(slug) == identity:
+            return {"provider": "openrouter", "model": slug}
+    return None
+
+
 def pin_refusal_error(agent: Any, reason: str) -> Optional[ModelPinRefusedError]:
     """The error to raise when a pinned run has run out of routes, else None.
 

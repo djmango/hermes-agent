@@ -841,11 +841,18 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
     from agent.model_pin import (
-        ModelPinRefusedError, agent_pin, pin_refuses, refusal_message,
+        ModelPinRefusedError, agent_pin, pin_refuses, pin_route_entry, refusal_message,
     )
     _pin = agent_pin(agent)
     _pin_refused: list[tuple[str, str]] = []
-    for _fb in _fallback_entries(fallback_model):
+    _entries = _fallback_entries(fallback_model)
+    if _pin is not None:
+        # No configured route serves the pinned model? The aggregator that relists it does, and
+        # that is a route change to the SAME model, never a swap.
+        _crossover = pin_route_entry(_pin, _entries)
+        if _crossover:
+            _entries = [*_entries, _crossover]
+    for _fb in _entries:
         # A pin outranks the chain: only a route serving the SAME model is a fallback. Anything
         # else would silently start the run on a different (usually weaker) model.
         if _pin is not None and pin_refuses(agent, str(_fb["provider"]), str(_fb["model"])):
@@ -1055,6 +1062,14 @@ def _init_fallback_chain(agent, fallback_model):
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
     agent._fallback_chain = _fallback_entries(fallback_model)
+    # A pinned model the chain cannot serve gets the aggregator's route to the SAME model, so the
+    # runtime walk has somewhere allowed to go instead of refusing while a usable route exists.
+    from agent.model_pin import agent_pin, pin_route_entry
+    _pin = agent_pin(agent)
+    if _pin is not None:
+        _crossover = pin_route_entry(_pin, agent._fallback_chain)
+        if _crossover:
+            agent._fallback_chain = [*agent._fallback_chain, _crossover]
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
