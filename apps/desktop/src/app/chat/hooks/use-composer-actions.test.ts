@@ -322,6 +322,86 @@ describe('useComposerActions native image drops', () => {
       })
     )
   })
+
+  it('attaches a pasted .png as the file it is, not as a screenshot', async () => {
+    const saveImageBuffer = vi.fn(async () => '/test/saved.png')
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    const picked = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
+    let attached = false
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([
+        { file: picked, fromPaste: true, path: '/Users/test/Desktop/shot.png' }
+      ])
+    })
+
+    expect(attached).toBe(true)
+    // No byte upload: the copied file is already on disk, so the chip carries
+    // its path and keeps kind `file` (the gateway opens the real .png).
+    expect(saveImageBuffer).not.toHaveBeenCalled()
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        path: '/Users/test/Desktop/shot.png'
+      })
+    )
+  })
+
+  it('attaches a pasted workbook as a file chip with its path', async () => {
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    const workbook = new File([new Uint8Array([1, 2, 3])], 'books.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    })
+
+    let attached = false
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([
+        { file: workbook, fromPaste: true, path: '/Users/test/Desktop/books.xlsx' }
+      ])
+    })
+
+    expect(attached).toBe(true)
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'file', path: '/Users/test/Desktop/books.xlsx' })
+    )
+  })
 })
 
 describe('attachImagePath thumbnail separation', () => {

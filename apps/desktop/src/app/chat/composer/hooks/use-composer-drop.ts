@@ -1,4 +1,4 @@
-import { type DragEvent as ReactDragEvent, useRef, useState } from 'react'
+import { type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, useRef, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 
@@ -161,4 +161,46 @@ export function useComposerDrop({
     handleInputDragOver,
     handleInputDrop
   }
+}
+
+/**
+ * Pasting a file copied in Finder/Explorer. The clipboard carries the file AND
+ * an image representation of its icon, so reading image blobs first attaches a
+ * picture of Excel instead of the workbook. Files win: any clipboard File that
+ * resolves to an on-disk path is attached as a file chip.
+ *
+ * Returns false when the clipboard holds no on-disk file — a screenshot, which
+ * is what the image-blob path exists for; the caller then falls back. Reads
+ * the transfer synchronously: it detaches once the paste handler returns, and
+ * `webUtils.getPathForFile` needs the original File reference. Consumes the
+ * event (preventDefault) only when it takes the paste.
+ */
+export function attachPastedFiles(
+  event: ReactClipboardEvent<HTMLDivElement>,
+  { onAttachDroppedItems, requestMainFocus }: Pick<UseComposerDropArgs, 'onAttachDroppedItems' | 'requestMainFocus'>
+): boolean {
+  if (!onAttachDroppedItems) {
+    return false
+  }
+
+  const pasted = extractDroppedFiles(event.clipboardData).filter(candidate =>
+    Boolean(candidate.file && candidate.path)
+  )
+
+  if (!pasted.length) {
+    return false
+  }
+
+  event.preventDefault()
+
+  void Promise.resolve(onAttachDroppedItems(pasted.map(candidate => ({ ...candidate, fromPaste: true })))).then(
+    attached => {
+      if (attached) {
+        triggerHaptic('selection')
+        requestMainFocus()
+      }
+    }
+  )
+
+  return true
 }
