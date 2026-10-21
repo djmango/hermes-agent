@@ -98,6 +98,13 @@ export interface DroppedFile {
   file?: File
   /** Absolute filesystem path. Empty when an OS drop didn't carry one. */
   path: string
+  /**
+   * True for a clipboard paste. A pasted file always lands as a file chip even
+   * when it is an image: a Finder/Explorer copy also puts an icon *image*
+   * representation on the clipboard, and a `.png` the user copied is still the
+   * file they copied, not a screenshot of it.
+   */
+  fromPaste?: boolean
   /** True if the entry is a directory. Set by in-app drags, and by OS drops via
    * DataTransferItem.webkitGetAsEntry(). */
   isDirectory?: boolean
@@ -374,6 +381,43 @@ export function partitionDroppedFiles(
   }
 
   return { osDrops, inAppRefs }
+}
+
+interface PathOnlyAttachers {
+  attachContextFilePath: (path: string) => boolean
+  attachContextFolderPath: (path: string) => boolean
+  attachImagePath: (path: string) => Promise<boolean>
+}
+
+/**
+ * Attach an entry that carries no File handle: an in-app drag (project tree,
+ * gutter line ref) or a dropped folder. Folders become `@folder:` chips,
+ * image paths go through the image pipeline, everything else is a plain file
+ * chip. Returns whether a chip was produced, and what to tell the user if not.
+ */
+async function attachPathOnlyCandidate(
+  candidate: DroppedFile,
+  attachers: PathOnlyAttachers
+): Promise<{ attached: boolean; failure: string | null }> {
+  const { isDirectory, path: knownPath } = candidate
+
+  if (isDirectory) {
+    return knownPath && attachers.attachContextFolderPath(knownPath)
+      ? { attached: true, failure: null }
+      : { attached: false, failure: `Could not attach folder ${knownPath || ''}` }
+  }
+
+  if (knownPath && isImagePath(knownPath)) {
+    return (await attachers.attachImagePath(knownPath))
+      ? { attached: true, failure: null }
+      : { attached: false, failure: `Could not attach ${knownPath}` }
+  }
+
+  if (knownPath && attachers.attachContextFilePath(knownPath)) {
+    return { attached: true, failure: null }
+  }
+
+  return { attached: false, failure: `Could not attach ${knownPath || 'file'}` }
 }
 
 /** The composer these actions feed. Defaults to the main chat's scope;
@@ -746,41 +790,21 @@ export function useComposerActions({
       let lastFailure: string | null = null
 
       for (const candidate of candidates) {
-        const { file, isDirectory, path: knownPath } = candidate
+        const { file, path: knownPath } = candidate
 
         // Path-only entry (in-app drag from the file browser tree, etc.).
         if (!file) {
-          if (isDirectory) {
-            if (knownPath && attachContextFolderPath(knownPath)) {
-              attached = true
+          const pathOnly = await attachPathOnlyCandidate(candidate, {
+            attachContextFilePath,
+            attachContextFolderPath,
+            attachImagePath
+          })
 
-              continue
-            }
-
-            lastFailure = `Could not attach folder ${knownPath || ''}`
-
-            continue
-          }
-
-          if (knownPath && isImagePath(knownPath)) {
-            if (await attachImagePath(knownPath)) {
-              attached = true
-
-              continue
-            }
-
-            lastFailure = `Could not attach ${knownPath}`
-
-            continue
-          }
-
-          if (knownPath && attachContextFilePath(knownPath)) {
+          if (pathOnly.attached) {
             attached = true
-
-            continue
+          } else {
+            lastFailure = pathOnly.failure
           }
-
-          lastFailure = `Could not attach ${knownPath || 'file'}`
 
           continue
         }
@@ -789,6 +813,24 @@ export function useComposerActions({
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
+
+        // A paste is always a file attach. Finder/Explorer put the copied
+        // file's *icon* on the clipboard as an image representation next to
+        // the file itself, and a `.png` the user copied is the file they
+        // copied — not a screenshot to interpret. So no image branch here:
+        // the chip keeps kind `file` and the gateway gets the path.
+        if (candidate.fromPaste) {
+          if (filePath && attachContextFilePath(filePath)) {
+            attached = true
+
+            continue
+          }
+
+          lastFailure = `Could not attach ${file.name || 'file'}`
+
+          continue
+        }
+
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {

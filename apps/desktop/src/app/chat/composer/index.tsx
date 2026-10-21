@@ -68,7 +68,7 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
-import { useComposerDrop } from './hooks/use-composer-drop'
+import { attachPastedFiles, useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
@@ -119,6 +119,25 @@ import {
   selectionLinkLabel
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+
+/**
+ * Attach every pasted image blob (the screenshot case). Returns whether there
+ * was an image to attach, so the empty-paste branch can tell a screenshot past
+ * from a genuinely empty clipboard.
+ */
+function attachPastedImages(blobs: Blob[], attach: ChatBarProps['onAttachImageBlob']): boolean {
+  if (blobs.length === 0 || !attach) {
+    return false
+  }
+
+  triggerHaptic('selection')
+
+  for (const blob of blobs) {
+    void attach(blob)
+  }
+
+  return true
+}
 
 export function ChatBar({
   busy,
@@ -562,15 +581,12 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
-
-    if (imageBlobs.length > 0 && onAttachImageBlob) {
-      triggerHaptic('selection')
-
-      for (const blob of imageBlobs) {
-        void onAttachImageBlob(blob)
-      }
+    // A copied file's clipboard also carries its ICON as an image item: files win.
+    if (attachPastedFiles(event, { onAttachDroppedItems, requestMainFocus })) {
+      return
     }
+
+    const pastedImage = attachPastedImages(extractClipboardImageBlobs(event.clipboardData), onAttachImageBlob)
 
     // Trim surrounding whitespace so a copy that dragged along leading/trailing
     // blank lines (common when selecting from terminals, code blocks, web pages)
@@ -581,7 +597,7 @@ export function ChatBar({
     if (!pastedText) {
       event.preventDefault()
 
-      if (imageBlobs.length > 0) {
+      if (pastedImage) {
         return
       }
 
