@@ -183,9 +183,7 @@ export function attachPastedFiles(
     return false
   }
 
-  const pasted = extractDroppedFiles(event.clipboardData).filter(candidate =>
-    Boolean(candidate.file && candidate.path)
-  )
+  const pasted = extractDroppedFiles(event.clipboardData).filter(candidate => Boolean(candidate.file && candidate.path))
 
   if (!pasted.length) {
     return false

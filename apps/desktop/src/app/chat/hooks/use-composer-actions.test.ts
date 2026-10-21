@@ -398,9 +398,7 @@ describe('useComposerActions native image drops', () => {
     })
 
     expect(attached).toBe(true)
-    expect(add).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'file', path: '/Users/test/Desktop/books.xlsx' })
-    )
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ kind: 'file', path: '/Users/test/Desktop/books.xlsx' }))
   })
 })
 
