@@ -12,6 +12,7 @@ import {
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
   filterDesktopSubcommandCompletions,
+  isDesktopHiddenCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestionWithOptions,
   rankSkillCommands,
@@ -295,6 +296,21 @@ export function useSlashCompletions(options: {
         const items = [...decorated].sort(
           (a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? '')
         )
+
+        // A command the popover hides while browsing (`/model`) has no place in
+        // the backend's ranking, so a fully typed hidden name arrives after the
+        // fuzzy description matches of other commands and the highlight lands on
+        // one of those. Promote it: the highlight sits on what was typed, and
+        // the first row Enter would commit is the command the user named.
+        const typedName = commandText(query).toLowerCase()
+
+        const hiddenHit = items.findIndex(
+          item => item.text.toLowerCase() === typedName && isDesktopHiddenCommand(item.text)
+        )
+
+        if (hiddenHit > 0) {
+          items.unshift(items.splice(hiddenHit, 1)[0])
+        }
 
         return { items, query }
       } catch {

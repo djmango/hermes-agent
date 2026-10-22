@@ -10,11 +10,13 @@ import {
   desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
   filterDesktopSubcommandCompletions,
+  isDesktopHiddenCommand,
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isDesktopSlashSuggestionWithOptions,
   isModelPickerCommand,
+  isPrefixOfHiddenDesktopCommand,
   isPickerCommand,
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
@@ -458,5 +460,28 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
         expect(isDesktopSlashCommand(name)).toBe(false)
       }
     }
+  })
+
+  // `desktop="hidden"` (`/model`) means "runs, but out of the BROWSE list" — the
+  // model pill owns discovery. Typed by NAME it must still surface: with its own
+  // row dropped, the only rows left were fuzzy description matches of unrelated
+  // commands, so the top one held the highlight and Enter ran it.
+  it('surfaces a hidden command when its name is typed in full, never while browsing', () => {
+    expect(isDesktopSlashSuggestion('/model')).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/model', {})).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/model', { exactAlias: '/mo' })).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/model', { exactAlias: '/model' })).toBe(true)
+    expect(isDesktopHiddenCommand('/model')).toBe(true)
+    expect(isDesktopHiddenCommand('/new')).toBe(false)
+  })
+
+  it('recognizes a token that is mid-way through a hidden command name', () => {
+    expect(isPrefixOfHiddenDesktopCommand('mo')).toBe(true)
+    expect(isPrefixOfHiddenDesktopCommand('/mod')).toBe(true)
+    // The finished name is not a "still typing" prefix.
+    expect(isPrefixOfHiddenDesktopCommand('/model')).toBe(false)
+    // One character is too early to tell a name from a search term.
+    expect(isPrefixOfHiddenDesktopCommand('m')).toBe(false)
+    expect(isPrefixOfHiddenDesktopCommand('comp')).toBe(false)
   })
 })

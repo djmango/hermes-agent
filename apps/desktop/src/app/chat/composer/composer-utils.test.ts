@@ -130,6 +130,14 @@ describe('implicitSlashAcceptIndex', () => {
     expect(implicitSlashAcceptIndex('rev', ['/compress', '/review', '/resume'], 0, false)).toBe(1)
   })
 
+  // `/mo` on the way to `/model`: the popover hides `/model` while browsing, so
+  // the only prefix hit left is `/moa`. Enter used to commit it, running a
+  // command the user never named. An arrowed pick still wins.
+  it('does not take a neighbour while the token is mid-way through a hidden command', () => {
+    expect(implicitSlashAcceptIndex('mo', ['/moa', '/memory'], 0, false)).toBeNull()
+    expect(implicitSlashAcceptIndex('mo', ['/moa', '/memory'], 0, true)).toBe(0)
+  })
+
   it('honours an arrowed pick even when it is not a prefix', () => {
     expect(implicitSlashAcceptIndex('review', rows, 0, true)).toBe(0)
   })

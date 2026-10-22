@@ -2,6 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import type { ConnectionState } from '@hermes/shared'
 
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { isPrefixOfHiddenDesktopCommand } from '@/lib/desktop-slash-commands'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
@@ -149,6 +150,15 @@ export function implicitSlashAcceptIndex(
 
   if (exact >= 0) {
     return exact
+  }
+
+  // Still being TYPED, not searched: the token prefixes a command the popover
+  // deliberately hides (`/mo` on the way to `/model`). The one surviving prefix
+  // hit is a different command (`/moa`), so accepting it runs something the
+  // user never named. The typed text submits instead, and the exact-name rule
+  // above picks `/model` the moment its name is complete.
+  if (isPrefixOfHiddenDesktopCommand(typed)) {
+    return null
   }
 
   const active = itemTexts[activeIndex]

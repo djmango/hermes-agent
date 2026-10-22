@@ -791,19 +791,29 @@ export function isDesktopSlashSuggestion(command: string): boolean {
 }
 
 /**
- * Same gate, with the one escape hatch the composer needs: an alias the user
- * typed EXACTLY (`/reset`, not a browsing prefix) must surface, or the empty
- * "no matches" popover reads as "this command doesn't exist" while Enter still
- * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
- * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
+ * Same gate, with the two escape hatches the composer needs, both keyed on what
+ * the user TYPED (a browsing prefix keeps them hidden):
+ *
+ *  - an alias typed EXACTLY (`/reset`) must surface, or the empty "no matches"
+ *    popover reads as "this command doesn't exist" while Enter still executes
+ *    it (#57641);
+ *  - a `desktop="hidden"` command typed EXACTLY (`/model`, kept out of the
+ *    browse list because the model pill owns discovery) must surface too. Its
+ *    own name matched nothing in the popover, so the only rows left were fuzzy
+ *    DESCRIPTION matches of other commands — an unrelated first row took the
+ *    highlight, and Enter on a prefix of it took the wrong command.
+ *
+ * Both are gated on `isDesktopSlashCommand` so commands with no desktop surface
+ * (e.g. `/reload_mcp`) stay hidden either way.
  */
 export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
+  const typedExactly = options.exactAlias != null && normalizeCommand(options.exactAlias) === normalized
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (isAliasCommand(normalized)) {
     if (options.exactAlias != null) {
-      return normalizeCommand(options.exactAlias) === normalized && isDesktopSlashCommand(normalized)
+      return typedExactly && isDesktopSlashCommand(normalized)
     }
 
     return false
@@ -812,11 +822,52 @@ export function isDesktopSlashSuggestionWithOptions(command: string, options: { 
   const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden && spec.desktopSubcommands?.length !== 0
+    return (
+      spec.surface.kind !== 'unavailable' &&
+      (typedExactly || !spec.hidden) &&
+      spec.desktopSubcommands?.length !== 0
+    )
   }
 
   // Skill / quick commands the backend provides.
   return isDesktopSlashExtensionCommand(normalized)
+}
+
+/**
+ * True when the popover keeps this command out of the BROWSE list while the
+ * command itself still runs (`desktop="hidden"` in the Python registry, e.g.
+ * `/model`). Distinct from `unavailable`, which never runs at all.
+ */
+export function isDesktopHiddenCommand(command: string): boolean {
+  const spec = resolveDesktopCommand(command)
+
+  return Boolean(spec && spec.hidden && spec.surface.kind !== 'unavailable')
+}
+
+/**
+ * True when `token` (the command name being typed, no slash) is a strict prefix
+ * of a command the popover deliberately hides — the user is mid-way through
+ * typing `/model`, not searching for something else. Enter must not silently
+ * take a neighbouring fuzzy hit for that token (`/mo` → `/moa`).
+ */
+export function isPrefixOfHiddenDesktopCommand(token: string): boolean {
+  const typed = token.trim().replace(/^\//, '').toLowerCase()
+
+  if (typed.length < 2) {
+    return false
+  }
+
+  const names = new Set([...SPEC_BY_NAME.keys(), ...Object.keys(liveCatalog()?.commands ?? {})])
+
+  for (const name of names) {
+    const plain = name.replace(/^\//, '').toLowerCase()
+
+    if (plain !== typed && plain.startsWith(typed) && isDesktopHiddenCommand(plain)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 /**

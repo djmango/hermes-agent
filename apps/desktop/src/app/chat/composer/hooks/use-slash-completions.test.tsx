@@ -160,6 +160,34 @@ describe('useSlashCompletions', () => {
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
   })
 
+  // The remote backend's own answer for `/model` (captured from a live
+  // `hermes serve`): the prefix matches, then the fuzzy DESCRIPTION matches
+  // that survive once `/model` is dropped as a hidden command. Typed by name it
+  // must come back, or the first unrelated row takes the highlight and Enter.
+  it('surfaces a hidden command whose name was typed in full', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : {
+              items: [
+                { text: '/moa', display: '/moa', kind: 'command', meta: 'Mixture of agents' },
+                { text: '/status', display: '/status', kind: 'command', meta: 'Show the session status' },
+                { text: '/model', display: '/model', kind: 'command', meta: 'Switch the model for this session' }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    // Typed in full it leads its own list, so the highlight (index 0) sits on
+    // the command the user named instead of the first description match.
+    expect(commandsOf(await completions(api, 'model'))[0]).toBe('/model')
+    // A browsing prefix keeps it hidden — the model pill owns discovery there.
+    expect(commandsOf(await completions(api, 'mo'))).not.toContain('/model')
+  })
+
   it('keeps a registry command in Commands even when the desktop table has no row', async () => {
     const request = vi.fn().mockImplementation((method: string) =>
       Promise.resolve(

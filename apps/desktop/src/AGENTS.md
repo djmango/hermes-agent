@@ -60,6 +60,11 @@ user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 `isDesktopSlashExtensionCommand` flowing into both paths. Test: from `apps/desktop`,
 `npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
 
+**Narrowing is the backend's: the popover must never leave the typed command out of its own list.** A
+`desktop="hidden"` command (`/model`) stays out of the BROWSE list but surfaces, and leads, when its name
+is typed in full — otherwise only fuzzy DESCRIPTION matches remain, row 0 holds the highlight, and Enter
+commits it (`/mo` → `/moa`). Proof: `e2e/core/slash-palette-remote.spec.ts` (real remote `hermes serve`).
+
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 
 Each bot is a Hermes **profile** with a persistent identity. This invariant regressed repeatedly,
