@@ -29,6 +29,10 @@ export const EARLIER_TIMELINE_ID = '__earlier-history__'
 export interface TimelineRevealRequest {
   id: string
   rowId?: number
+  /** A stored message the rail has no entry for (a search hit). The chat surface
+   *  resolves it to the prompt that produced it, so a caller that knows only the
+   *  message still lands on its turn. */
+  messageId?: number
   signal: AbortSignal
   complete: (revealedId: string | false) => void
 }

@@ -822,17 +822,27 @@ async def get_session_timeline(
 
 @manage_router.get("/api/sessions/{session_id}/messages/around")
 async def get_session_messages_around(
-    session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
+    session_id: str, row_id: Optional[int] = Query(None, ge=1), profile: Optional[str] = None,
+    message_id: Optional[int] = Query(None, ge=1),
     limit: int = Query(120, ge=1, le=120),
 ):
-    """Bounded display page starting at a timeline prompt; no intervening payloads."""
+    """Bounded display page starting at a timeline prompt.
+
+    Exactly one of ``row_id`` / ``message_id`` addresses the page. ``message_id``
+    lets a caller that knows only a stored message (a search hit, usually an
+    assistant row) land that message's turn; the page reports the prompt row it
+    resolved to as ``pagination.row_id``.
+    """
     from hermes_state_timeline import get_session_messages_around as read_around
+
+    if (row_id is None) == (message_id is None):
+        raise HTTPException(status_code=422, detail="Pass exactly one of row_id or message_id")
 
     owner = _serving_profile(profile)
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
-        page = read_around(db, sid, row_id, limit=limit)
+        page = read_around(db, sid, row_id, limit=limit, message_id=message_id)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
         return {"session_id": sid, "profile": owner, **page}

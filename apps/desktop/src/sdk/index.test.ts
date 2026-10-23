@@ -421,3 +421,51 @@ describe('host.sessions session-list mutations', () => {
     expect($sessionColorOverrides.get()).toEqual({})
   })
 })
+
+const revealMocks = vi.hoisted(() => ({ revealStoredMessage: vi.fn(async () => true) }))
+
+vi.mock('@/app/chat/reveal-message', () => ({ revealStoredMessage: revealMocks.revealStoredMessage }))
+
+describe('host.revealMessage', () => {
+  beforeEach(() => {
+    revealMocks.revealStoredMessage.mockReset()
+    revealMocks.revealStoredMessage.mockImplementation(async () => true)
+  })
+
+  it('opens the session first, then hands the message to the transcript', async () => {
+    const order: string[] = []
+    const open = vi.spyOn(host, 'openSession').mockImplementation(async () => {
+      order.push('open')
+    })
+
+    revealMocks.revealStoredMessage.mockImplementation(async () => {
+      order.push('reveal')
+
+      return true
+    })
+
+    const revealed = await host.revealMessage('stored-1', 42, { awaitHydration: false, profile: 'work' })
+
+    expect(revealed).toBe(true)
+    expect(order).toEqual(['open', 'reveal'])
+    expect(open).toHaveBeenCalledWith('stored-1', {
+      awaitHydration: false,
+      expectHistory: true,
+      profile: 'work'
+    })
+    expect(revealMocks.revealStoredMessage).toHaveBeenCalledWith('stored-1', 42)
+    open.mockRestore()
+  })
+
+  it('refuses an address it cannot reveal without opening anything', async () => {
+    const open = vi.spyOn(host, 'openSession').mockResolvedValue(undefined)
+
+    expect(await host.revealMessage('', 42)).toBe(false)
+    expect(await host.revealMessage('   ', 42)).toBe(false)
+    expect(await host.revealMessage('stored-1', 0)).toBe(false)
+    expect(await host.revealMessage('stored-1', Number.NaN)).toBe(false)
+    expect(open).not.toHaveBeenCalled()
+    expect(revealMocks.revealStoredMessage).not.toHaveBeenCalled()
+    open.mockRestore()
+  })
+})

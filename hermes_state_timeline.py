@@ -98,14 +98,62 @@ def _register_functions(db, conn):
                          deterministic=True)
 
 
-def get_session_messages_around(db, session_id, row_id, *, limit=120):
+def _prompt_row_for_message(conn, session_id, message_id):
+    """The human prompt whose turn holds *message_id*.
+
+    A search hit is usually an assistant row, which this route never accepts as an
+    anchor, so the anchor is the newest display prompt at or before it. Prompts are
+    ordered by the same stable first-row key the timeline rail draws, so the page
+    handed back is the one a rail jump to that prompt would select.
+    """
+    params = {"sid": session_id, "mid": message_id}
+    # A caller may hand over any id at all; an id this session never stored has no
+    # prompt to land on, and answering with the nearest one would silently jump a
+    # foreign or typo'd hit to the wrong turn.
+    exists = conn.execute(
+        "SELECT 1 FROM messages WHERE session_id = :sid AND id = :mid", params
+    ).fetchone()
+    if exists is None:
+        return None
+    rows = _display_rows_sql(conn, session_id)
+    hit = conn.execute(rows + """
+        SELECT sort_id FROM display_rows WHERE row_id = :mid
+    """, params).fetchone()
+    # A row that is not a display representative (a copy a compaction absorbed)
+    # keeps its own id as the upper bound: physical ids only grow, so no prompt
+    # can start after it.
+    params["boundary"] = hit["sort_id"] if hit is not None else message_id
+    prompts = _display_rows_sql(conn, session_id, users_only=True) + """,
+        prompts AS MATERIALIZED (
+            SELECT row_id, sort_id,
+                   timeline_preview(m.content, m.display_kind, m._compressed_summary) AS preview
+            FROM display_rows JOIN messages m ON m.id = row_id
+        )
+    """
+    row = conn.execute(prompts + """
+        SELECT row_id FROM prompts WHERE sort_id <= :boundary AND preview <> ''
+        ORDER BY sort_id DESC LIMIT 1
+    """, params).fetchone()
+    return row["row_id"] if row is not None else None
+
+
+def get_session_messages_around(db, session_id, row_id=None, *, limit=120, message_id=None):
     """Read at most *limit* display rows starting at an exact human prompt.
 
-    Existence probes/counts contain ids only. Full payloads are fetched only for
-    the selected bounded page, even when the anchor is deep in a transcript.
+    ``row_id`` addresses the prompt itself. ``message_id`` addresses any stored
+    message and resolves to the prompt whose turn produced it, so a caller that
+    only knows a search hit lands on that hit's turn instead of the transcript
+    tail. Existence probes/counts contain ids only. Full payloads are fetched only
+    for the selected bounded page, even when the anchor is deep in a transcript.
     """
     with _snapshot(db) as conn:
         _register_functions(db, conn)
+        if row_id is None:
+            if message_id is None:
+                return None
+            row_id = _prompt_row_for_message(conn, session_id, message_id)
+            if row_id is None:
+                return None
         anchor = conn.execute(
             "SELECT content, display_kind, _compressed_summary FROM messages "
             "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",

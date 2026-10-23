@@ -15,6 +15,14 @@ interface TimelineRevealOptions {
   expandWindow: (beforePrepend?: () => void) => void | Promise<boolean>
   prepare: () => void
   sessionKey?: string | null
+  /** Hold the top-edge auto-page off while a message-addressed jump loads and
+   *  lands. Returns the release; call it when the landing move has finished so the
+   *  scroll events that move causes are not mistaken for a reader asking for
+   *  earlier turns. */
+  holdAutoPage?: () => () => void
+  /** Scroll the row a message-addressed jump landed on into place, and spend the
+   *  auto-page hold in `release` once the move is over. */
+  landRevealed?: (id: string, release: () => void) => void
 }
 
 /** Direct archive jumps select one bounded page, never every intervening turn. */
@@ -48,6 +56,18 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
       const timeout = window.setTimeout(abort, 15000)
       const valid = () => !controller.signal.aborted
       const find = (id: string) => viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+      const messageId = request.messageId
+      // A message-addressed jump replaces the page with one that STARTS at the
+      // revealed prompt, which puts the viewport on the top edge. Hold the
+      // top-edge auto-page for the whole read and landing, or it pulls the page
+      // before the hit straight back over it.
+      const releaseAutoPage = messageId === undefined ? () => {} : (latest.current.holdAutoPage?.() ?? (() => {}))
+      let landing = false
+      const releaseWhenSettled = () => {
+        if (!landing) {
+          releaseAutoPage()
+        }
+      }
 
       void (async () => {
         latest.current.prepare()
@@ -63,11 +83,33 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
 
         id = loaded?.id ?? id
 
+        // A stored message the rail has no entry for (a search hit). When the row
+        // is already on screen its runtime id is in the store, so the jump paints
+        // without a page read; otherwise the bounded around-page names it.
+        const hit =
+          messageId === undefined
+            ? undefined
+            : [...(latest.current.history.currentMessages ?? []), ...view.$messages.get()].find(
+                message => message.rowId === messageId
+              )
+
+        if (hit) {
+          id = hit.id
+        }
+
         if (find(id)) {
           return id
         }
 
-        if (
+        if (messageId !== undefined && !hit && latest.current.history.revealMessage) {
+          const target = await latest.current.history.revealMessage(messageId, controller.signal)
+
+          if (!target || !valid()) {
+            return false
+          }
+
+          id = target
+        } else if (
           rowId !== undefined &&
           !latest.current.groups.some(group => group.id === id) &&
           latest.current.history.revealRow
@@ -134,6 +176,12 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
 
             if (node && (id !== EARLIER_TIMELINE_ID || node.dataset.messageId !== first)) {
               latest.current.prepare()
+
+              if (messageId !== undefined) {
+                landing = true
+                latest.current.landRevealed?.(node.dataset.messageId!, releaseAutoPage)
+              }
+
               finish(node.dataset.messageId!)
             }
           }
@@ -156,6 +204,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
         .finally(() => {
           clearTimeout(timeout)
           request.signal.removeEventListener('abort', abort)
+          releaseWhenSettled()
         })
     }
 

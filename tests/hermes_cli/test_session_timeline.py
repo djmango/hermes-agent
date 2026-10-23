@@ -127,6 +127,41 @@ def test_cursor_survives_compaction_between_pages(timeline_store):
     assert empty["pagination"]["has_more"] is False
 
 
+def test_message_id_jump_lands_on_the_prompt_that_produced_the_hit(timeline_store):
+    """A search hit names a stored message, never a timeline row: an assistant hit
+    lands on its own turn, and the page reports the prompt it resolved to."""
+    db, client, _ = timeline_store
+    sid = "timeline-root"
+    db.append_messages_batch(sid, [
+        {"role": "user", "content": "first ask", "timestamp": 10},
+        {"role": "assistant", "content": "first answer", "timestamp": 11},
+        {"role": "user", "content": "second ask", "timestamp": 12},
+        {"role": "assistant", "content": "second answer", "timestamp": 13},
+    ])
+    rows = db.get_messages(sid)
+    prompt = next(row for row in rows if row["content"] == "second ask")
+    hit = next(row for row in rows if row["content"] == "second answer")
+
+    page = client.get(f"/api/sessions/{sid}/messages/around", params={"message_id": hit["id"]})
+    assert page.status_code == 200
+    body = page.json()
+    assert body["pagination"]["row_id"] == prompt["id"]
+    assert body["messages"][0]["id"] == prompt["id"]
+    assert [row["content"] for row in body["messages"]] == ["second ask", "second answer"]
+    assert body["pagination"]["offset"] == 2
+
+    own = client.get(f"/api/sessions/{sid}/messages/around", params={"message_id": prompt["id"]}).json()
+    assert own["pagination"]["row_id"] == prompt["id"]
+    # An id this session never stored has no prompt to land on, and a session's own
+    # ids resolve only inside it.
+    assert client.get(f"/api/sessions/{sid}/messages/around", params={"message_id": 99999}).status_code == 404
+    db.create_session(session_id="other-root", source="desktop")
+    db.append_messages_batch("other-root", [{"role": "user", "content": "elsewhere"}])
+    foreign = db.get_messages("other-root")[0]["id"]
+    assert client.get(f"/api/sessions/{sid}/messages/around", params={"message_id": foreign}).status_code == 404
+    assert client.get(f"/api/sessions/{sid}/messages/around").status_code == 422
+
+
 def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
     db, client, home = timeline_store
     sid = "timeline-root"
