@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { TIMELINE_REVEAL_EVENT, type TimelineRevealRequest } from '@/components/assistant-ui/thread/timeline-data'
 import { $selectedStoredSessionId } from '@/store/session'
@@ -40,14 +40,6 @@ function answerReveals(viewport: HTMLElement, revealedId: string, seen: Timeline
 afterEach(() => {
   document.body.innerHTML = ''
   $selectedStoredSessionId.set(null)
-})
-
-// jsdom does not implement matchMedia, and the jump honours prefers-reduced-motion.
-beforeEach(() => {
-  Object.defineProperty(window, 'matchMedia', {
-    configurable: true,
-    value: (query: string) => ({ matches: false, media: query, onchange: null })
-  })
 })
 
 describe('revealing a stored message from outside the chat surface', () => {

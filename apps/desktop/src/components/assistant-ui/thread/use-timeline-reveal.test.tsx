@@ -90,3 +90,111 @@ describe('timeline direct reveal', () => {
     expect(ui.getByText('latest')).toBeTruthy()
   })
 })
+
+function MessageJump({
+  hold,
+  land,
+  revealed
+}: {
+  hold: () => () => void
+  land: (id: string, release: () => void) => void
+  revealed: string | null
+}) {
+  const [id, setId] = useState('latest')
+
+  return (
+    <TranscriptWindowProvider
+      value={{
+        olderAvailable: true,
+        expandWindow: vi.fn(),
+        revealMessage: async () => {
+          if (revealed) {
+            setId(revealed)
+          }
+
+          return revealed
+        }
+      }}
+    >
+      <JumpViewport id={id} hold={hold} land={land} />
+    </TranscriptWindowProvider>
+  )
+}
+
+function JumpViewport({
+  id,
+  hold,
+  land
+}: {
+  id: string
+  hold: () => () => void
+  land: (id: string, release: () => void) => void
+}) {
+  const viewport = useRef<HTMLDivElement>(null)
+
+  useTimelineReveal({
+    viewport,
+    groups: [{ id, weight: 1 }],
+    hiddenCount: 0,
+    renderBudget: 600,
+    olderAvailable: true,
+    revealBudget: vi.fn(),
+    expandWindow: vi.fn(),
+    prepare: vi.fn(),
+    sessionKey: 'session',
+    holdAutoPage: hold,
+    landRevealed: land
+  })
+
+  return (
+    <div data-testid="viewport" ref={viewport}>
+      <div data-message-id={id}>{id}</div>
+    </div>
+  )
+}
+
+describe('a message-addressed jump', () => {
+  it('holds the top-edge auto-page for the read, lands the prompt, and spends the hold', async () => {
+    const controller = new AbortController()
+    const complete = vi.fn()
+    const release = vi.fn()
+    const hold = vi.fn(() => release)
+    const land = vi.fn((_id: string, done: () => void) => done())
+    const ui = render(<MessageJump hold={hold} land={land} revealed="prompt-40" />)
+
+    await act(async () => {
+      ui.getByTestId('viewport').dispatchEvent(
+        new CustomEvent(TIMELINE_REVEAL_EVENT, {
+          detail: { id: '', messageId: 41, signal: controller.signal, complete }
+        })
+      )
+    })
+
+    expect(hold).toHaveBeenCalledOnce()
+    expect(land).toHaveBeenCalledWith('prompt-40', release)
+    expect(release).toHaveBeenCalledOnce()
+    expect(complete).toHaveBeenCalledWith('prompt-40')
+  })
+
+  it('spends the hold when no prompt holds the message', async () => {
+    const controller = new AbortController()
+    const complete = vi.fn()
+    const release = vi.fn()
+    const hold = vi.fn(() => release)
+    const land = vi.fn()
+    const ui = render(<MessageJump hold={hold} land={land} revealed={null} />)
+
+    await act(async () => {
+      ui.getByTestId('viewport').dispatchEvent(
+        new CustomEvent(TIMELINE_REVEAL_EVENT, {
+          detail: { id: '', messageId: 41, signal: controller.signal, complete }
+        })
+      )
+    })
+
+    expect(hold).toHaveBeenCalledOnce()
+    expect(land).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+    expect(complete).toHaveBeenCalledWith(false)
+  })
+})

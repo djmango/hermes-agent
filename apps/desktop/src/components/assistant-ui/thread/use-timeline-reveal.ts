@@ -15,6 +15,14 @@ interface TimelineRevealOptions {
   expandWindow: (beforePrepend?: () => void) => void | Promise<boolean>
   prepare: () => void
   sessionKey?: string | null
+  /** Hold the top-edge auto-page off while a message-addressed jump loads and
+   *  lands. Returns the release; call it when the landing move has finished so the
+   *  scroll events that move causes are not mistaken for a reader asking for
+   *  earlier turns. */
+  holdAutoPage?: () => () => void
+  /** Scroll the row a message-addressed jump landed on into place, and spend the
+   *  auto-page hold in `release` once the move is over. */
+  landRevealed?: (id: string, release: () => void) => void
 }
 
 /** Direct archive jumps select one bounded page, never every intervening turn. */
@@ -48,12 +56,23 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
       const timeout = window.setTimeout(abort, 15000)
       const valid = () => !controller.signal.aborted
       const find = (id: string) => viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+      const messageId = request.messageId
+      // A message-addressed jump replaces the page with one that STARTS at the
+      // revealed prompt, which puts the viewport on the top edge. Hold the
+      // top-edge auto-page for the whole read and landing, or it pulls the page
+      // before the hit straight back over it.
+      const releaseAutoPage = messageId === undefined ? () => {} : (latest.current.holdAutoPage?.() ?? (() => {}))
+      let landing = false
+      const releaseWhenSettled = () => {
+        if (!landing) {
+          releaseAutoPage()
+        }
+      }
 
       void (async () => {
         latest.current.prepare()
         let id = request.id
         const rowId = request.rowId ?? (id.startsWith('history:') ? Number(id.slice(8)) : undefined)
-        const messageId = request.messageId
 
         const loaded =
           rowId === undefined
@@ -157,6 +176,12 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
 
             if (node && (id !== EARLIER_TIMELINE_ID || node.dataset.messageId !== first)) {
               latest.current.prepare()
+
+              if (messageId !== undefined) {
+                landing = true
+                latest.current.landRevealed?.(node.dataset.messageId!, releaseAutoPage)
+              }
+
               finish(node.dataset.messageId!)
             }
           }
@@ -179,6 +204,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
         .finally(() => {
           clearTimeout(timeout)
           request.signal.removeEventListener('abort', abort)
+          releaseWhenSettled()
         })
     }
 

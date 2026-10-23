@@ -21,10 +21,6 @@ const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]'
  *  spend seconds dialing, so this is generous; the read it guards is bounded and
  *  cancellable. */
 export const REVEAL_MOUNT_TIMEOUT_MS = 15_000
-/** The scroll tween the rail uses, so a plugin jump feels like a rail jump. */
-export const REVEAL_SCROLL_MS = 170
-/** Space kept above the landed turn, as the rail keeps it. */
-export const REVEAL_SCROLL_SLACK_PX = 8
 
 /** The chat surface for `storedSessionId`: its tile if one is open, else the
  *  primary workspace while that is the selected session. A kept-alive neighbor
@@ -118,40 +114,13 @@ function waitForViewport(
   })
 }
 
-/** Put the landed turn at the top of the viewport, the way a rail jump does. */
-export function scrollTurnIntoView(viewport: HTMLElement, node: HTMLElement): void {
-  const start = viewport.scrollTop
-  const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
-  const destination = Math.max(
-    0,
-    start + turn.getBoundingClientRect().top - viewport.getBoundingClientRect().top - REVEAL_SCROLL_SLACK_PX
-  )
-  const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : REVEAL_SCROLL_MS
-  const began = performance.now()
-
-  if (!duration) {
-    viewport.scrollTop = destination
-
-    return
-  }
-
-  const step = (now: number) => {
-    const progress = Math.min(1, (now - began) / duration)
-    viewport.scrollTop = start + (destination - start) * (1 - (1 - progress) ** 3)
-
-    if (progress < 1) {
-      requestAnimationFrame(step)
-    }
-  }
-
-  requestAnimationFrame(step)
-}
-
 /**
  * Reveal `messageId` inside `storedSessionId` on whichever chat surface owns it.
- * Resolves true only when a rendered row was found and scrolled to; a session
- * with no mounted surface, no such prompt, or a surface that never answered
- * resolves false so the caller can keep its own fallback.
+ * The surface loads the bounded page, lands the prompt whose turn holds the
+ * message, and scrolls it into place. Resolves true only when a rendered row was
+ * actually revealed; a session with no mounted surface, no such prompt, or a
+ * surface that never answered resolves false so the caller can keep its own
+ * fallback.
  */
 export async function revealStoredMessage(
   storedSessionId: string,
@@ -215,8 +184,6 @@ export async function revealStoredMessage(
     if (!node) {
       return false
     }
-
-    scrollTurnIntoView(viewport, node)
 
     return true
   } finally {

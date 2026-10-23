@@ -51,6 +51,7 @@ import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
+import { scrollTurnIntoView } from './timeline-scroll'
 import { useTimelineReveal } from './use-timeline-reveal'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
@@ -590,6 +591,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const loadTargetRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
   const cancelRestoreRef = useRef<(() => void) | null>(null)
   const applyRestoreRef = useRef<(() => void) | null>(null)
+  // Holds off the top-edge auto-page while a jump is loading and landing. A jump
+  // lands ON the top edge by construction, so without this the transcript pages
+  // the turn before the hit straight back over it.
+  const autoPageHoldRef = useRef(0)
   // Pages auto-spent toward the current parked offset; reset at each park.
   const autoGrowPagesRef = useRef(0)
   // Bumped when the settle loop parks an offset, so the grow effect below
@@ -1364,6 +1369,35 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     olderAvailable,
     expandWindow,
     sessionKey,
+    // A message-addressed jump replaces the page with one that starts at the
+    // revealed prompt, so the browser then sits on the top edge the auto-page
+    // watches. Hold it for the read, the landing move, and the frame after the
+    // last write; a reader's own scroll still pages once the hold is spent.
+    holdAutoPage: () => {
+      autoPageHoldRef.current += 1
+      let spent = false
+
+      return () => {
+        if (spent) {
+          return
+        }
+
+        spent = true
+        autoPageHoldRef.current = Math.max(0, autoPageHoldRef.current - 1)
+      }
+    },
+    landRevealed: (id, release) => {
+      const el = scrollRef.current
+      const node = el?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+
+      if (!el || !node) {
+        release()
+
+        return
+      }
+
+      scrollTurnIntoView(el, node, release)
+    },
     revealBudget: budget => setRenderBudget(current => Math.max(current, budget)),
     prepare: () => {
       cancelRestoreRef.current?.()
@@ -1431,6 +1465,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const tryShowEarlier = (wheelDeltaY?: number) => {
+      // A jump in flight owns the scroll position; the top edge it lands on is
+      // ours, not a reader asking for the turn before.
+      if (autoPageHoldRef.current > 0) {
+        return
+      }
+
       if (
         shouldAutoShowEarlier({
           action: resolveShowEarlierAction(hiddenCount, olderAvailable),
