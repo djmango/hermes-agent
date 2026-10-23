@@ -23,6 +23,7 @@ import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
+import { revealStoredMessage } from '@/app/chat/reveal-message'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -1197,6 +1198,35 @@ export const host = {
         gatewaySwapTargetOwnerGeneration = null
       }
     }
+  },
+
+  /** Open a stored session and land its transcript on one of its messages. A
+   *  search result knows a message id, never a timeline row, so `openSession`
+   *  alone can only open the tail. This is the door for "open at the hit": it
+   *  opens with the options `openSession` takes, then reveals the prompt whose
+   *  turn holds the message and scrolls that turn to the top of the transcript.
+   *  Resolves true only when a rendered row was actually scrolled to.
+   *
+   *  Feature-detect on older desktops (`typeof host.revealMessage === 'function'`)
+   *  and fall back to `openSession`. */
+  revealMessage: async (
+    storedSessionId: string,
+    messageId: number,
+    options: PluginOpenSessionOptions = {}
+  ): Promise<boolean> => {
+    const id = (storedSessionId ?? '').trim()
+    const message = Number(messageId)
+
+    if (!id || !Number.isSafeInteger(message) || message <= 0) {
+      return false
+    }
+
+    // The session has to be on screen before there is a transcript to scroll, and
+    // a cold open is asynchronous: wait for hydration unless the caller asked for
+    // a paint-first wake, then let the surface mount.
+    await host.openSession(id, { awaitHydration: true, expectHistory: true, ...options })
+
+    return revealStoredMessage(id, message)
   },
 
   /** Open (or re-front) a plugin-rendered MAIN-AREA workspace tile — the same

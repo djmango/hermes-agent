@@ -7,6 +7,10 @@ export interface TranscriptWindowValue {
   olderAvailable: boolean
   /** Direct row addressing replaces only the display page; null means no jump. */
   revealRow?: (rowId: number, signal: AbortSignal) => Promise<string | null>
+  /** The same bounded page, addressed by a stored message (a search hit) rather
+   *  than a prompt row; resolves the runtime id of the prompt whose turn holds
+   *  it, or null when the message has no prompt at or before it. */
+  revealMessage?: (messageId: number, signal: AbortSignal) => Promise<string | null>
   /** Cancel any pending jump and reselect the current live tail. */
   returnToLatest?: () => void
   isHistorical?: boolean
@@ -23,6 +27,7 @@ const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
   olderAvailable: false,
   expandWindow: () => {},
   revealRow: async () => null,
+  revealMessage: async () => null,
   returnToLatest: () => {},
   isHistorical: false,
   newerAvailable: false,

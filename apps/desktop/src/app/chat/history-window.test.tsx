@@ -268,6 +268,48 @@ describe('bounded direct history runtime', () => {
   })
 })
 
+/** A page whose hit is an assistant row. The route anchors on the prompt that
+ *  produced it and reports that row back as `pagination.row_id`, which is the row
+ *  the transcript can scroll to (assistant rows carry no scroll anchor). */
+const messagePage = (promptRow: number, hitRow: number) => ({
+  session_id: 'stored',
+  pagination: {
+    has_older: true,
+    has_newer: true,
+    limit: 120,
+    offset: 40,
+    returned: 3,
+    order: 'oldest' as const,
+    row_id: promptRow
+  },
+  messages: [
+    { id: promptRow, role: 'user' as const, content: `prompt ${promptRow}`, timestamp: promptRow },
+    { id: hitRow, role: 'assistant' as const, content: 'the hit', timestamp: hitRow }
+  ]
+})
+
+describe('revealing a stored message by id', () => {
+  it('reads the page by message id and lands on the prompt whose turn holds the hit', async () => {
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(messagePage(40, 41))
+    const mounted = mount()
+
+    let id: string | null = null
+    await act(async () => {
+      id = await mounted.window.revealMessage(41, new AbortController().signal)
+    })
+
+    expect(api).toHaveBeenCalledTimes(1)
+    const url = new URL(api.mock.calls[0][0].path, 'http://test')
+    expect(url.pathname).toBe('/api/sessions/stored/messages/around')
+    expect(url.searchParams.get('message_id')).toBe('41')
+    expect(url.searchParams.get('row_id')).toBeNull()
+    // The hit is the assistant row, so the landing row is its prompt.
+    expect(mounted.window.currentMessages?.find(message => message.rowId === 40)?.id).toBe(id)
+    expect(mounted.window.currentMessages?.find(message => message.rowId === 41)?.id).not.toBe(id)
+    expect(mounted.window.isHistorical).toBe(true)
+  })
+})
+
 /** A complete metadata page: prompt marks are all the range a reader can walk. */
 const index = (rowIds: number[]) => ({
   entries: rowIds.map(rowId => ({ row_id: rowId, preview: `prompt ${rowId}` })),

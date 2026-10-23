@@ -18,6 +18,8 @@ export interface HistoryWindowResponse extends SessionMessagesResponse {
   pagination: NonNullable<SessionMessagesResponse['pagination']> & {
     has_older: boolean
     has_newer: boolean
+    /** The prompt row the page is anchored on, echoed back by the route. */
+    row_id?: number
   }
 }
 
@@ -27,25 +29,35 @@ interface HistoryPage {
   newerAvailable: boolean
   /** Display rows before this page's first row; how two pages prove they touch. */
   offset: number
+  /** The prompt row the backend actually anchored on. For a message-addressed
+   *  page the caller did not name a prompt, so this is the row to scroll to. */
+  anchorRowId: number | null
 }
+
+/** What an around-read is anchored on: a prompt row the caller already knows, or
+ *  a stored message whose owning prompt only the backend can resolve. */
+export type HistoryAnchor = { rowId: number } | { messageId: number }
 
 export async function fetchHistoryWindow(
   storedId: string,
-  rowId: number,
+  anchor: HistoryAnchor,
   scope: ProfileScope,
   signal: AbortSignal
 ): Promise<HistoryPage> {
   signal.throwIfAborted()
 
-  // Owner connection pin (#125372): an around-read for a session owned by
-  // another registry connection must read THAT host, not the ambient one.
+  // Owner connection pin (#125372): an around-read for a session owned by another
+  // registry connection must read THAT host, not the ambient one.
   const route = {
     ...capabilityScoped(scope),
     ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {}),
     ...sessionReadOwnerPin(storedId, scope)
   }
 
-  const query = new URLSearchParams({ row_id: String(rowId), limit: String(HISTORY_WINDOW_LIMIT) })
+  const query =
+    'rowId' in anchor
+      ? new URLSearchParams({ row_id: String(anchor.rowId), limit: String(HISTORY_WINDOW_LIMIT) })
+      : new URLSearchParams({ message_id: String(anchor.messageId), limit: String(HISTORY_WINDOW_LIMIT) })
 
   if (route.profile) {
     query.set('profile', route.profile)
@@ -66,11 +78,14 @@ export async function fetchHistoryWindow(
     throw new Error('History response exceeds the bounded page size.')
   }
 
+  const resolved = Number(response.pagination.row_id)
+
   return {
     messages: toChatMessages(response.messages),
     olderAvailable: response.pagination.has_older === true,
     newerAvailable: response.pagination.has_newer === true,
-    offset: Math.max(0, Number(response.pagination.offset) || 0)
+    offset: Math.max(0, Number(response.pagination.offset) || 0),
+    anchorRowId: Number.isSafeInteger(resolved) && resolved > 0 ? resolved : null
   }
 }
 
@@ -104,11 +119,22 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     setSelection(null)
   }, [cancel])
 
-  const revealRow = useCallback(
-    async (rowId: number, signal: AbortSignal): Promise<string | null> => {
+  /**
+   * Replace the display page with the one anchored at `anchor`, and return the
+   * runtime id of the row `pick` selects from it. A message-addressed read has no
+   * prompt the caller knows, so the route resolves one and reports it.
+   */
+  const openAnchoredPage = useCallback(
+    async (
+      anchor: HistoryAnchor,
+      pick: (page: HistoryPage) => ChatMessage | undefined,
+      signal: AbortSignal
+    ): Promise<string | null> => {
       cancel()
 
-      if (signal.aborted || !Number.isSafeInteger(rowId) || rowId <= 0) {
+      const address = 'rowId' in anchor ? anchor.rowId : anchor.messageId
+
+      if (signal.aborted || !Number.isSafeInteger(address) || address <= 0) {
         return null
       }
 
@@ -131,7 +157,7 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
 
       try {
         const next = await Promise.race([
-          fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal),
+          fetchHistoryWindow(captured.storedId, anchor, captured.scope, controller.signal),
           aborted
         ])
 
@@ -144,7 +170,7 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
           return null
         }
 
-        const target = next.messages.find(message => message.rowId === rowId)
+        const target = pick(next)
 
         if (!target) {
           return null
@@ -167,6 +193,31 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
       }
     },
     [cancel]
+  )
+
+  const revealRow = useCallback(
+    (rowId: number, signal: AbortSignal): Promise<string | null> =>
+      openAnchoredPage({ rowId }, page => page.messages.find(message => message.rowId === rowId), signal),
+    [openAnchoredPage]
+  )
+
+  /**
+   * Reveal a stored message that the caller only knows by id (a search hit).
+   * Assistant rows carry no scroll anchor of their own, so the transcript lands
+   * on the prompt whose turn produced the message.
+   */
+  const revealMessage = useCallback(
+    (messageId: number, signal: AbortSignal): Promise<string | null> =>
+      openAnchoredPage(
+        { messageId },
+        page =>
+          (page.anchorRowId === null
+            ? undefined
+            : page.messages.find(message => message.rowId === page.anchorRowId)) ??
+          page.messages.find(message => message.rowId === messageId),
+        signal
+      ),
+    [openAnchoredPage]
   )
 
   /**
@@ -212,7 +263,7 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
           return false
         }
 
-        const next = await fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal)
+        const next = await fetchHistoryWindow(captured.storedId, { rowId }, captured.scope, controller.signal)
         // The around route reads forward from a prompt, so a turn longer than the
         // page limit leaves rows between that page's end and this anchor. Never
         // paint that as one continuous transcript: show the older page on its
@@ -254,5 +305,5 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     [cancel]
   )
 
-  return { page, revealRow, returnToLatest, revealOlder }
+  return { page, revealRow, revealMessage, returnToLatest, revealOlder }
 }

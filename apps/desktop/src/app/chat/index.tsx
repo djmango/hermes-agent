@@ -419,19 +419,20 @@ export function ChatRuntimeBoundary({
   const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
-  const { revealRow, returnToLatest } = history
+  const { revealRow, revealMessage, returnToLatest } = history
 
   const transcriptWindow = useMemo(
     () => ({
       olderAvailable,
       expandWindow,
       revealRow,
+      revealMessage,
       returnToLatest,
       currentMessages,
       isHistorical,
       newerAvailable
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [expandWindow, olderAvailable, revealRow, revealMessage, returnToLatest, currentMessages, isHistorical, newerAvailable]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({

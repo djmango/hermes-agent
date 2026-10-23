@@ -53,6 +53,7 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
         latest.current.prepare()
         let id = request.id
         const rowId = request.rowId ?? (id.startsWith('history:') ? Number(id.slice(8)) : undefined)
+        const messageId = request.messageId
 
         const loaded =
           rowId === undefined
@@ -63,11 +64,33 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
 
         id = loaded?.id ?? id
 
+        // A stored message the rail has no entry for (a search hit). When the row
+        // is already on screen its runtime id is in the store, so the jump paints
+        // without a page read; otherwise the bounded around-page names it.
+        const hit =
+          messageId === undefined
+            ? undefined
+            : [...(latest.current.history.currentMessages ?? []), ...view.$messages.get()].find(
+                message => message.rowId === messageId
+              )
+
+        if (hit) {
+          id = hit.id
+        }
+
         if (find(id)) {
           return id
         }
 
-        if (
+        if (messageId !== undefined && !hit && latest.current.history.revealMessage) {
+          const target = await latest.current.history.revealMessage(messageId, controller.signal)
+
+          if (!target || !valid()) {
+            return false
+          }
+
+          id = target
+        } else if (
           rowId !== undefined &&
           !latest.current.groups.some(group => group.id === id) &&
           latest.current.history.revealRow
