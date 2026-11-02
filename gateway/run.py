@@ -4390,10 +4390,14 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
     return home / "sessions"
 
 
+_SETTLED_RESULT_RECLAIM_AT: dict = {}
+
+
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+    by sessions.min_interval_hours (VACUUM additionally by its own throttles), and the settled-result
+    reclaim runs whether or not either is on. Opens its own SessionDB — SQLite connections are
+    thread-bound.
 
     Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
@@ -4404,6 +4408,23 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
+    _interval_h = max(1, int(_sess_cfg.get("min_interval_hours", 24)))
+    # Stored turn results nobody can read any more. It deletes no session, so it is NOT behind the
+    # auto_prune switch below: that switch exists to keep transcripts, and a store that keeps every
+    # transcript was keeping every settled turn's result blob as well - 4,615 blobs / 300 MB on
+    # 2026-11-01, one per turn, with nothing reclaiming them. The in-process stamp keeps this off
+    # the DB for every tick between runs; the store's own marker covers restarts.
+    _home = str(get_hermes_home())
+    if (_sess_cfg.get("result_reclaim", True)
+            and time.time() - _SETTLED_RESULT_RECLAIM_AT.get(_home, 0.0) >= _interval_h * 3600):
+        _SETTLED_RESULT_RECLAIM_AT[_home] = time.time()
+        _rdb = acquire()
+        try:
+            _rdb.maybe_reclaim_settled_results(min_interval_hours=_interval_h)
+        except Exception as _exc:  # housekeeping never takes the tick down
+            logger.warning("state.db settled-result reclaim failed: %s", _exc)
+        finally:
+            release_or_close(_rdb)
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
         return
     _adb = acquire()

@@ -384,9 +384,10 @@ class SessionMaintenanceMixin:
             session_ids = {row["id"] for row in cursor.fetchall()}
             if exclude_active_write_guards:
                 session_ids -= self._guarded_ids(conn, session_ids)
-            from hermes_state_mutation_retirement import prune_retired_tombstones, retire_prunable
+            from hermes_state_mutation_retirement import prune_retired_tombstones, reclaim_settled_results, retire_prunable
             session_ids = retire_prunable(conn, sorted(session_ids))
             prune_retired_tombstones(conn)  # every prune pass also reclaims expired deletion tombstones
+            reclaim_settled_results(conn)  # and settled turn results no reader can reach any more
             if not session_ids:
                 return 0
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
@@ -408,6 +409,51 @@ class SessionMaintenanceMixin:
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
         return count
+
+    def maybe_reclaim_settled_results(self, older_than_days: float = 7,
+                                      min_interval_hours: int = 24) -> dict[str, Any]:
+        """Idempotent, non-destructive reclaim of stored turn results no reader can reach (never raises).
+
+        Deliberately independent of :meth:`maybe_auto_prune_and_vacuum`: that path deletes SESSIONS, so
+        it only runs when ``sessions.auto_prune`` says so, and a node that keeps every transcript was
+        therefore also keeping every settled turn's stored result forever - measured on a live gateway
+        store on 2026-11-01, ``gateway.admission.result.v1.*`` held 4,608 blobs / 300 MB, one per
+        settled turn, and grew with every turn the gateway ran. This deletes no session, no message and no
+        admission: only a result row no admission names, or a settled turn's result whose session has
+        been idle past the exact-retry horizon with no live work. Throttled by the
+        ``last_settled_result_reclaim`` marker so the gateway's tick does not sweep every pass.
+        """
+        result: dict[str, Any] = {"skipped": False, "reclaimed": 0}
+        try:
+            now = time.time()
+            try:
+                last = float(self.get_meta("last_settled_result_reclaim") or 0.0)
+            except (TypeError, ValueError):
+                last = 0.0  # corrupt meta; treat as no prior run
+            if last and now - last < min_interval_hours * 3600:
+                result["skipped"] = True
+                return result
+            from hermes_state_mutation_retirement import reclaim_settled_results
+            result["reclaimed"] = self._execute_write(
+                lambda conn: reclaim_settled_results(conn, older_than=older_than_days * 86400))
+            self.set_meta("last_settled_result_reclaim", str(now))
+            if result["reclaimed"]:
+                logger.info("state.db settled-result reclaim: deleted %d unreachable turn result(s)",
+                            result["reclaimed"])
+                # A reclaim is otherwise invisible: it leaves no row behind to read. One line per pass
+                # that freed something, in the local-time prefix `hermes-sync experiment` reads.
+                try:
+                    _log = Path(self.db_path).parent / "logs" / "state-result-reclaim.log"
+                    _log.parent.mkdir(parents=True, exist_ok=True)
+                    with _log.open("a", encoding="utf-8") as fh:
+                        fh.write(time.strftime("%Y-%m-%d %H:%M:%S") +
+                                 f" deleted {result['reclaimed']} unreachable turn result(s)\n")
+                except OSError:
+                    pass  # the journal line above already records it
+        except Exception as exc:
+            logger.warning("state.db settled-result reclaim failed: %s", exc)
+            result["error"] = str(exc)
+        return result
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:
         """Integer PRAGMAs over the existing connection (never a byte probe); None + debug log on failure."""

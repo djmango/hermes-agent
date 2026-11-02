@@ -372,3 +372,74 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
         replay = rt.admit_session_input(db, epoch=epoch, **young)
         assert replay['admission_id'] == young_id and replay['status'] == 'terminal'
         assert admission_result(db, young_id)['result']['final_response'] == 'reply young'
+
+
+def test_a_result_no_admission_names_is_reclaimed_and_a_live_one_survives(tmp_path):
+    """A stored turn result is reached only through its admission row (``admission_result`` reads
+    the row first), so a result key nothing names is unreadable and reclaimable; a result whose
+    admission is still live is not touched."""
+    from hermes_state_terminal import RESULT_PREFIX
+    import hermes_state_mutation_retirement as retirement
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        db.create_session('live', source='api_server')
+        rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='live', request_id='r',
+                               payload={'text': 'ask'})
+        row = rt.claim_session_input(db, epoch=epoch, session_id='live')
+        retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'reply', 'messages': []}})
+        db.set_meta(RESULT_PREFIX + 'no-admission-was-ever-written', '{"result": {"final_response": "dead"}}')
+        assert db._execute_write(lambda c: retirement.reclaim_settled_results(c)) == 1
+        assert db.get_meta(RESULT_PREFIX + 'no-admission-was-ever-written') is None
+        assert admission_result(db, row['admission_id'])['result']['final_response'] == 'reply'
+
+
+def test_settled_results_of_an_idle_session_are_reclaimed_past_the_horizon(tmp_path):
+    """The exact-retry horizon bounds a settled result, and only for a session with nothing live:
+    an idle session's result goes, an active one's and a session holding queued work keep theirs.
+    Nothing else about the receipt changes - a repeated request still answers from its own row
+   ."""
+    import time
+    import hermes_state_mutation_retirement as retirement
+    now = time.time()
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+
+        def settle(sid, request):
+            db.create_session(sid, source='api_server')
+            rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id=sid, request_id=request,
+                                   payload={'text': 'ask ' + sid})
+            row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+            retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'reply ' + sid,
+                                                                       'messages': []}})
+            return row
+
+        idle = settle('idle', 'r1')
+        busy = settle('busy', 'r2')
+        waiting = settle('waiting', 'r3')
+        # 'waiting' keeps a queued turn: its settled result is still reachable, so it stays whatever
+        # the session's age.
+        rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='waiting', request_id='r4',
+                               payload={'text': 'next'})
+        db._execute_write(lambda c: c.executemany(
+            'UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?',
+            [(now - 30 * 86400, now - 30 * 86400, sid) for sid in ('idle', 'waiting')]))
+
+        assert db._execute_write(lambda c: retirement.reclaim_settled_results(c, older_than=7 * 86400)) == 1
+        assert admission_result(db, idle['admission_id']) is None
+        assert rt.get_session_admission(db, admission_id=idle['admission_id'])['status'] == 'terminal', \
+            'only the result goes: the admission row is the receipt a repeated request answers from'
+        assert admission_result(db, busy['admission_id'])['result']['final_response'] == 'reply busy'
+        assert admission_result(db, waiting['admission_id'])['result']['final_response'] == 'reply waiting'
+
+
+def test_the_maintenance_sweep_runs_once_a_interval_and_records_what_it_freed(tmp_path):
+    """The gateway tick calls the throttled entry, not the sweep: it must do the work once, leave a
+    line saying what it freed (a reclaim leaves no row behind to read), and then hold off for its
+    interval."""
+    from hermes_state_terminal import RESULT_PREFIX
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.set_meta(RESULT_PREFIX + 'no-admission-was-ever-written', '{"result": {}}')
+        assert db.maybe_reclaim_settled_results()['reclaimed'] == 1
+        assert db.get_meta(RESULT_PREFIX + 'no-admission-was-ever-written') is None
+        assert 'deleted 1 unreachable turn result(s)' in (tmp_path / 'logs' / 'state-result-reclaim.log').read_text()
+        assert db.maybe_reclaim_settled_results()['skipped'] is True

@@ -431,3 +431,56 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (WORKER_PREFIX + '*', cutoff))
     for prefix in (RETIRED_PREFIX, ROUTE_FENCE_PREFIX):
         _reclaim_expired(conn, prefix, cutoff)
+
+
+# Rows per write in :func:`reclaim_settled_results`. A store that has never swept holds thousands of
+# settled results and each one can be megabytes, so the sweep deletes a bounded number per write: the
+# gateway's write lock is shared with every live turn, and one transaction holding the whole set would
+# stall them for as long as the page writes take.
+SETTLED_RESULT_BATCH = 200
+
+# A result row is unreachable, and so reclaimable, when nothing can name it any more. Two things can:
+# a ``session_admissions`` row (``gateway.session_results.admission_result`` reads that row first), or
+# its deletion tombstone (``gateway.terminal_admission.v1.<id>``, which keeps a deleted session's
+# exact retry and is reclaimed by ``prune_retired_tombstones`` bar by bar). So a result goes when
+# :admission_prefix || its admission id names nothing, and no admission row reaches it either; or when
+# the admission reaching it is settled (``terminal``) for a session idle past the exact-retry horizon
+# with no live work. That is the same horizon the tombstones keep, so no replay guarantee is
+# shortened: an admission whose session is active, or that is still queued/started/unknown, keeps its
+# result whatever its age. Bound by name: :result_prefix, :admission_prefix, :admission_suffix (the
+# offset a result key's admission id starts at), :cutoff the horizon's start.
+_UNREACHABLE_RESULT_SQL = """SELECT m.rowid FROM state_meta m WHERE m.key GLOB :result_prefix || '*' AND NOT EXISTS (
+    SELECT 1 FROM state_meta t WHERE t.key = :admission_prefix || substr(m.key, :admission_suffix)) AND NOT EXISTS (
+    SELECT 1 FROM session_admissions a WHERE m.key = :result_prefix || a.admission_id AND (
+        a.status != 'terminal'
+        OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.target_session_id
+                    AND coalesce(s.last_activity_at, s.ended_at, s.started_at) >= :cutoff)
+        OR EXISTS (SELECT 1 FROM session_admissions live WHERE live.target_session_id = a.target_session_id
+                    AND live.status IN ('queued','started','unknown')))) LIMIT :batch"""
+
+
+def reclaim_settled_results(conn, *, older_than: float = RETRY_HORIZON_S, batch=SETTLED_RESULT_BATCH):
+    """Delete stored turn results nothing can read any more; returns how many rows went.
+
+    A settled turn's result is the byte-exact reply an exact retry replays and the API surfaces
+    project. It is kept for the exact-retry horizon and, once the store stops reclaiming them, it is
+    kept forever: measured on a live gateway store on 2026-11-01, ``gateway.admission.result.v1.*``
+    held 4,608 blobs / 300 MB, one per settled turn, because the only path that deleted a result was
+    a *deleted* session's tombstone prune. A live session's results had no reclaimer at all, so the
+    blobs grew with every turn the gateway ran. This is that reclaimer: the same horizon, and nothing
+    but the result row goes (the admission stays, so a repeated request is still the same receipt).
+    """
+    from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX
+    cutoff = time.time() - older_than
+    params = {'result_prefix': RESULT_PREFIX, 'admission_prefix': ADMISSION_PREFIX,
+              'admission_suffix': len(RESULT_PREFIX) + 1, 'cutoff': cutoff,
+              'batch': max(1, int(batch))}
+    reclaimed = 0
+    while True:
+        rowids = [row[0] for row in conn.execute(_UNREACHABLE_RESULT_SQL, params).fetchall()]
+        if not rowids:
+            return reclaimed
+        conn.execute(f'DELETE FROM state_meta WHERE rowid IN ({",".join("?" for _ in rowids)})', rowids)
+        reclaimed += len(rowids)
+        if len(rowids) < params['batch']:
+            return reclaimed
