@@ -879,3 +879,66 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+# ---------------------------------------------------------------------------
+# The owner's mode outranks the agent's notify flag where the mode is a promise
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_off_mode_stays_silent_even_when_the_agent_armed_notify(monkeypatch, tmp_path):
+    """`off` means off. A notify_on_complete flag must not resurrect the channel: the agent
+    arms that flag on nearly every background launch, so honouring it made `off` a lie and
+    the owner kept getting exit cards he had explicitly turned off."""
+    import tools.process_registry as pr_module
+
+    exited = SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=1.0,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 3, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_error_mode_stays_silent_for_a_success_but_speaks_for_a_failure(monkeypatch, tmp_path):
+    """Under `error` only a failure is news, whether or not the agent armed notify. The flag
+    narrows an open channel; it cannot reopen a channel the owner closed to successes."""
+    import tools.process_registry as pr_module
+
+    ok = SimpleNamespace(
+        output_buffer="fine\n", exited=True, exit_code=0, command="make build", started_at=1.0,
+    )
+    bad = SimpleNamespace(
+        output_buffer="boom\n", exited=True, exit_code=2, command="make build", started_at=1.0,
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    # A clean exit says nothing at all: the agent's flag must not reopen the channel.
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([ok] * 3, consumed=False))
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    await runner._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+    runner.adapters[Platform.TELEGRAM].send.assert_not_awaited()
+    runner._enqueue_process_completion_notification.assert_not_awaited()
+
+    # A non-zero exit still speaks.
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([bad] * 3, consumed=False))
+    runner2 = _build_runner(monkeypatch, tmp_path, "error")
+    runner2._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    await runner2._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+    assert runner2._enqueue_process_completion_notification.await_count == 1
+    call = runner2._enqueue_process_completion_notification.await_args
+    assert call is not None and "exit code 2" in call.args[0]

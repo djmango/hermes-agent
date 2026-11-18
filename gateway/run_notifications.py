@@ -1870,7 +1870,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         notify_mode = self._load_background_notifications_mode()  # the owning profile's (scope bound above)
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
-        silent = notify_mode == "off" and not agent_notify
+        # "off" is off: the owner turned the channel off, so not even an agent's own notify flag
+        # may put a card in the chat. Every other mode honours the flag, because there the flag is
+        # narrowing a channel the owner kept open.
+        silent = notify_mode == "off"
         last_output_len = 0
         completion_attempts = 0
         retry_interval = interval
@@ -1899,7 +1902,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if session.exited:
                 # Agent-notify: inject a synthetic message unless the agent already consumed the result via
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
-                if agent_notify and not process_registry.is_completion_consumed(session_id):
+                # Under "error" mode only a failure is news: the owner asked for exit cards solely when
+                # something broke, so an agent's notify flag must not resurrect the exit-0 card for every
+                # build and shell command it started. (The flag outranks every other mode by design.)
+                agent_notify_speaks = agent_notify and not (
+                    notify_mode == "error" and session.exit_code in {0, None}
+                )
+                if agent_notify_speaks and not process_registry.is_completion_consumed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
