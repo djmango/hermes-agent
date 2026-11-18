@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import threading
@@ -59,13 +60,26 @@ class _LoopUnavailable(RuntimeError):
 
 
 def _schedule(coro, loop, *, timeout: float):
-    """Run ``coro`` on the supervisor loop from a sync caller and wait for its result."""
+    """Run ``coro`` on the supervisor loop from a sync caller and wait for its result.
+
+    The loop can stop between the check that queued ``coro`` and the callback that would
+    await it — a concurrent ``stop()``, or the supervisor thread exiting on its own —
+    leaving ``coro`` garbage-collected un-awaited: a ``RuntimeWarning`` in the journal and
+    a WebSocket closed only by process teardown. Close it on the way out whenever the loop
+    never started it, so ``stop()`` either closes the socket or leaks nothing.
+    """
     from agent.async_utils import safe_schedule_threadsafe
 
     fut = safe_schedule_threadsafe(coro, loop)
     if fut is None:
         raise _LoopUnavailable("Browser supervisor loop unavailable")
-    return fut.result(timeout=timeout)
+    try:
+        return fut.result(timeout=timeout)
+    finally:
+        # ``CORO_CREATED`` = the loop never started it, so nothing else owns or will
+        # await it; ``safe_schedule_threadsafe`` already closed the scheduling failures.
+        if inspect.getcoroutinestate(coro) == inspect.CORO_CREATED:
+            coro.close()
 
 
 def _fail(error: str) -> dict[str, Any]:
