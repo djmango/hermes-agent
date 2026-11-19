@@ -1,0 +1,27 @@
+name: session-summary
+repo: https://github.com/djmango/hermes-session-summary
+sha: 66ca6f7f0a18964d1aa5e6f3dae2f8799d8b4d51
+subdir: session-summary
+description: >-
+  A summary of the chat you are in, in a pane beside the file tree, and a card when a
+  session row is hovered. The pane shows a headline, what happened as numbered bullets,
+  what is still open, the files the chat touched, and a reference on every bullet that
+  jumps the transcript to the message it came from. Written from your own transcript
+  store by a model you can pick, paced so a long chat stays current without burning
+  compute, and rebuildable on demand. Everything stays local: the summary is stored as
+  one small JSON document under your Hermes home, and the only outbound call is the one
+  your configured model provider already receives. Needs nothing beyond a working Hermes
+  install; without a provider that answers, the pane still fills in from the transcript
+  itself and says so.
+maintainer: djmango
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+docs_url: https://github.com/djmango/hermes-session-summary#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  requires_env: []
