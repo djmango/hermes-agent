@@ -1,6 +1,6 @@
 name: session-summary
 repo: https://github.com/djmango/hermes-session-summary
-sha: 66ca6f7f0a18964d1aa5e6f3dae2f8799d8b4d51
+sha: ca91ec89df24fdbf449ea6a3ad94eb14376fd5eb
 subdir: session-summary
 description: >-
   A summary of the chat you are in, in a pane beside the file tree, and a card when a
@@ -18,7 +18,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22"
 docs_url: https://github.com/djmango/hermes-session-summary#readme
-version: "1.0.0"
+version: "1.0.1"
 readme: true
 platforms: []
 capabilities:
