@@ -618,6 +618,39 @@ class GatewayStartupMixin:
             logger.warning("Skipping auto-resume for %s: authorization check failed: %s", session_key, exc)
         return False
 
+    def _local_resume_adapter(self, source):
+        """The LOCAL adapter for *source*'s profile, created and wired on demand.
+
+        A desktop-only install has no LOCAL adapter until something asks for one, and the boot
+        sweep runs BEFORE local sessions are restored — so every restart-interrupted desktop chat
+        was skipped with only a DEBUG line and nothing ever re-ran the sweep. The adapter is also
+        built outside ``_create_adapter``, so it starts with ``_message_handler = None`` and
+        ``handle_message`` would silently drop the resume event. Create it and wire its handlers
+        here so the synthetic resume takes the same path a real local message does.
+        """
+        try:
+            from gateway.session_authorities import all_authorities
+            from gateway.session_local_recovery import local_adapter
+            profile = getattr(source, "profile", None)
+            registry = getattr(self, "session_authorities", None)
+            authority = None
+            for candidate in all_authorities(self):
+                name = registry.profile_name(candidate) if registry is not None else None
+                if profile is None or name == profile:
+                    authority = candidate
+                    break
+            if authority is None:
+                return None
+            adapter = local_adapter(authority)
+            if getattr(adapter, "_message_handler", None) is None:
+                wire = getattr(self, "_wire_adapter_handlers", None)
+                if wire is not None:
+                    wire(adapter)
+            return adapter
+        except Exception:
+            logger.debug("Could not prepare a LOCAL adapter for auto-resume", exc_info=True)
+            return None
+
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions: synthesize an empty-text turn (the
         ``_is_resume_pending`` injection path owns the wording). Sessions whose adapter is offline stay
@@ -630,25 +663,58 @@ class GatewayStartupMixin:
         candidates = self._resume_pending_candidates(platform)
         if candidates is None:
             return 0
+        if not candidates:
+            # A parked chat that no longer passes the candidate filter is the exact failure this
+            # sweep exists to prevent. Name the reason instead of leaving the boot silent.
+            with _log_suppressed(logging.DEBUG, "resume-pending census failed: %s"):
+                with self.session_store._lock:
+                    self.session_store._ensure_loaded_locked()
+                    parked = [e for e in self.session_store._entries.values() if e.resume_pending]
+                if parked:
+                    reasons = {}
+                    for e in parked:
+                        why = ("suspended" if e.suspended else "no-origin" if e.origin is None
+                               else "reason-not-auto" if e.resume_reason not in self._AUTO_RESUME_REASONS
+                               else "other")
+                        reasons[why] = reasons.get(why, 0) + 1
+                    logger.info(
+                        "Auto-resume: %d resume-pending session(s) but 0 eligible (scope=%s): %s",
+                        len(parked), getattr(platform, "value", platform), reasons,
+                    )
+            return 0
         scheduled = 0
         for entry in candidates:
             # Canonical admissions own restart decisions, including unknown pauses.
             # Legacy synthetic resume must not race their restored FIFO.
             from gateway.session_authorities import all_authorities, holds_admission
             if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
+                # A restart-interrupted chat used to be dropped here in complete silence: the
+                # ledger keeps a row per completed turn, so "holds an admission" was true for
+                # every chat that ever ran and the sweep never resumed one. Say it out loud.
+                logger.info("Skipping auto-resume for %s: this runtime still owns an unsettled admission",
+                            entry.session_key)
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
             if not _is_fresh_gateway_interruption(marker, window_secs=window):
+                logger.info("Skipping auto-resume for %s: interruption marker %r is older than %ss",
+                            entry.session_key, marker, window)
                 continue
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
+                logger.info("Skipping auto-resume for %s: a turn is already running", entry.session_key)
                 continue
             source = self._restored_source(entry)
-            adapter = self._delivery_adapter_for(source)
+            if getattr(source, "platform", None) == Platform.LOCAL:
+                # A desktop chat has no delivery adapter until a local session is restored; the
+                # LOCAL adapter is in-process and always available, so resume through it instead
+                # of leaving the chat parked with nothing to wake it.
+                adapter = self._local_resume_adapter(source)
+            else:
+                adapter = self._delivery_adapter_for(source)
             if adapter is None:
-                logger.debug(
+                logger.info(
                     "Skipping auto-resume for %s: adapter not ready for %s", entry.session_key,
                     getattr(source.platform, "value", source.platform),
                 )
@@ -1621,6 +1687,13 @@ class GatewayStartupMixin:
         await self._finish_startup_restore()
         from gateway.run_runtime import recover_gateway_native_sessions
         await recover_gateway_native_sessions(self)
+        # Local sessions are restored by the recovery pass just above: their receipts are registered
+        # in the LOCAL adapter and their LiveSession carries the registered source object, which is
+        # what ``authorize_source`` requires. A desktop chat interrupted by the restart can only be
+        # authorized and resumed NOW — the sweep above ran before any of that existed. Re-run it
+        # scoped to LOCAL, or a desktop-only install leaves every interrupted chat parked until the
+        # user types into it.
+        self._schedule_resume_pending_sessions(platform=Platform.LOCAL)
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()

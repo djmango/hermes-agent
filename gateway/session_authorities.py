@@ -267,13 +267,28 @@ def admission_owner(authority, session_id):
 
 
 def holds_admission(authority, session_id) -> bool:
-    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
-    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
-    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    """Whether *authority* still OWNS an unsettled canonical admission for *session_id*.
+
+    An admission only owns a chat while it is unsettled AND belongs to THIS runtime's epoch.
+    ``session_admissions`` is an append-only ledger: every completed turn leaves a row behind, so
+    "a row exists" is true for every chat that ever ran. Counting those rows made the startup
+    auto-resume skip every restart-interrupted chat forever, silently - the restart marker was
+    fresh, the sweep found the candidate, and this predicate dropped it. Previous-epoch rows are
+    settled by ``recover_session_inputs`` at boot (started -> unknown) and are never ours to wait
+    on. A parked profile's retained (retiring) store that cannot answer counts as holding one:
+    startup auto-resume fails closed for that entry instead of stopping the boot or resuming a
+    turn that FIFO may own."""
     try:
+        # An authority without an epoch cannot own a row: -1 matches nothing, so the chat resumes
+        # instead of being parked on an admission nobody is running.
+        try:
+            epoch = int(getattr(authority, 'epoch', -1))
+        except (TypeError, ValueError):
+            epoch = -1
         return bool(authority.db._read_one(
-            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
-            (session_id, admission_owner(authority, session_id))))
+            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) '
+            "AND status <> 'terminal' AND owner_epoch = ? LIMIT 1",
+            (session_id, admission_owner(authority, session_id), epoch)))
     except Exception as exc:
         if not getattr(authority, 'retiring', False):
             raise
