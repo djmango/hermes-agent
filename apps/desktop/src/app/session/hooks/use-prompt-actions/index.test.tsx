@@ -4,6 +4,8 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
+import { USER_TURN_AREA, type UserTurn } from '@/contrib/user-turn'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
 import { textPart } from '@/lib/chat-messages'
@@ -5896,5 +5898,134 @@ describe('usePromptActions cron run write gate (#88443)', () => {
       expect.objectContaining({ text: 'still running' }),
       1_800_000
     )
+  })
+})
+
+describe('usePromptActions typed composer turn', () => {
+  const disposers: Array<() => void> = []
+
+  function collectTurns(): UserTurn[] {
+    const turns: UserTurn[] = []
+
+    disposers.push(
+      registry.register({
+        id: 'test:user-turn',
+        area: USER_TURN_AREA,
+        data: { handle: (turn: UserTurn) => turns.push(turn) }
+      })
+    )
+
+    return turns
+  }
+
+  /** A gateway that admits the prompt and echoes its admission receipt. */
+  function admittingGateway(status = 'queued') {
+    return vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
+
+      return {
+        session_id: params?.session_id,
+        status,
+        submission_id: params?.submission_id
+      } as never
+    })
+  }
+
+  afterEach(() => {
+    cleanup()
+    disposers.splice(0).forEach(d => d())
+    $hudMode.set(false)
+    vi.restoreAllMocks()
+  })
+
+  it('dispatches one turn naming the bubble the app recorded, for a typed send', async () => {
+    const turns = collectTurns()
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = admittingGateway()
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('send all four')).toBe(true)
+
+    expect(turns).toHaveLength(1)
+
+    const [turn] = turns
+
+    expect(turn).toMatchObject({
+      source: 'composer',
+      text: 'send all four',
+      sessionId: RUNTIME_SESSION_ID,
+      storedSessionId: RUNTIME_SESSION_ID
+    })
+    expect(turn.at).toBeTypeOf('number')
+
+    // The id in the event is the id of the bubble the person sees, not a fresh
+    // one invented by the consumer.
+    const messages = (seeds.at(-1)?.messages ?? []) as Array<{ id: string; role: string }>
+    const userBubble = messages.filter(message => message.role === 'user').at(-1)
+
+    expect(userBubble?.id).toBe(turn.messageId)
+  })
+
+  it('dispatches nothing for a queued drain, a hidden turn, a voice turn or a HUD turn', async () => {
+    const turns = collectTurns()
+    const requestGateway = admittingGateway()
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('send all four', { fromQueue: true })).toBe(true)
+    expect(await handle!.submitText('send all four', { displayKind: 'hidden' })).toBe(true)
+    expect(await handle!.submitText('send all four', { surface: 'voice-live' })).toBe(true)
+
+    $hudMode.set(true)
+
+    expect(await handle!.submitText('send all four')).toBe(true)
+
+    $hudMode.set(false)
+
+    expect(turns).toHaveLength(0)
+    expect(requestGateway).toHaveBeenCalledTimes(4)
+  })
+
+  it('dispatches nothing when the receipt is a dedupe ack of a turn that already ran', async () => {
+    const turns = collectTurns()
+    const requestGateway = admittingGateway('terminal')
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('send all four')).toBe(true)
+    expect(turns).toHaveLength(0)
+  })
+
+  it('dispatches nothing when the gateway refuses the turn', async () => {
+    const turns = collectTurns()
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('gateway refused')
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('send all four')).toBe(false)
+    expect(turns).toHaveLength(0)
   })
 })

@@ -40,6 +40,9 @@ export type { PluginPreview } from './plugin-preview'
 import type { Contribution } from './types'
 
 export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages'
+/** The host's record of a person's own composer turn. Read-only to plugins:
+ *  register a `chat.userTurn` contribution carrying `{ handle }` to receive it. */
+export type { UserTurn, UserTurnSink } from './user-turn'
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'

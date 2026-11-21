@@ -1,6 +1,7 @@
 import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
+import { dispatchUserTurn } from '@/contrib/user-turn'
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
@@ -1131,6 +1132,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
         let legacyAccepted = false
+        // The receipt status this submit landed with: `terminal` and `unknown`
+        // are dedupe acks of an admission that already ran, so no turn exists
+        // to hand a consumer as the person's word.
+        let acceptedStatus: null | string = null
         // The identity the backend actually accepted: the live runtime id,
         // replaced below when a stale binding was recovered.
         let acceptedRuntimeSessionId = liveSessionId
@@ -1317,6 +1322,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }
 
           acceptedRuntimeSessionId = receiptSessionId
+          acceptedStatus = result?.status ?? null
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -1357,6 +1363,31 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Submit landed — the turn now runs (busy stays true), but the submit
         // window is closed, so release the lock for the next (sequential) send.
         releaseSubmitLock()
+
+        // A plain typed composer turn, and nothing else, is the person's own
+        // word. A queued drain, a hidden widget intent, a voice turn and a
+        // slash/skill expansion are another surface's or another clock's, and
+        // a terminal/unknown receipt is a dedupe ack of a turn that already
+        // ran, so none of them is dispatched.
+        if (
+          visibleText &&
+          acceptedStatus !== 'terminal' &&
+          acceptedStatus !== 'unknown' &&
+          !options?.fromQueue &&
+          options?.displayKind !== 'hidden' &&
+          !options?.surface &&
+          !options?.displayText &&
+          !$hudMode.get()
+        ) {
+          dispatchUserTurn({
+            source: 'composer',
+            messageId: optimisticId,
+            sessionId: acceptedRuntimeSessionId,
+            storedSessionId: recoverStoredSessionId ?? null,
+            text: visibleText,
+            at: submittedAt
+          })
+        }
 
         return true
       } catch (err) {
