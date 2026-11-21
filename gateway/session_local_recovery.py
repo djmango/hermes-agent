@@ -193,6 +193,12 @@ def restore_local_session(authority, sid):
             # cold restore). An untoggled entry stays None and keeps following the launch policy.
             if current is not None:
                 entry.yolo = current.yolo
+                # The restart mark lives on the routed entry, not on the receipt. Replacing the
+                # entry with the creation copy dropped it, so every desktop chat a SIGTERM cut read
+                # as finished before the boot sweep looked, and nothing resumed it.
+                entry.resume_pending = current.resume_pending
+                entry.resume_reason = current.resume_reason
+                entry.last_resume_marked_at = current.last_resume_marked_at
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy
